@@ -11,7 +11,11 @@
 //   base       = tvl_usd x BASE_MULTIPLE
 //   growth     = clamp(change_7d, -60, 120) per cent
 //   growthMult = 1 + (growth / 100) x GROWTH_WEIGHT
-//   maturity   = 0.6 + min(age_days, 1095) / 1095 x 0.4   (age_days unknown: 365)
+//                // GROWTH_WEIGHT=0.5 means a 100% 7d gain adds only 50% to value; it dampens
+//                // short-term pumps so the model reflects sustained traction, not daily noise.
+//   maturity   = maturityFloor + maturityRange x maturityCurve(age_days)
+//                // maturityCurve rises quickly in the first 180 days (sqrt), then linearly to 1.0
+//                // at maturityDays (1095 = 3 years). Unknown age uses unknownAgeDays (180).
 //   implied    = max(1, round(base x growthMult x maturity))
 //
 // The constants are the house model's, stated in the dashboard and changeable in the model sandbox. No
@@ -60,7 +64,7 @@ export const MODEL: ModelConstants = {
   maturity_floor: 0.6,
   maturity_range: 0.4,
   maturity_days: 1095,
-  unknown_age_days: 365,
+  unknown_age_days: 180,
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
@@ -157,10 +161,23 @@ export class SnapshotError extends Error {
 }
 
 const DAY_MS = 86_400_000;
+const MATURITY_EARLY_DAYS = 180; // sqrt curve applies up to this age
 
 /** A finite number, else `fallback`. */
 function finite(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+/** Maturity curve: steep (sqrt) for the first MATURITY_EARLY_DAYS, then linear to 1.0 at maturityDays. */
+function maturityCurve(ageDays: number, maturityDays: number): number {
+  if (ageDays <= MATURITY_EARLY_DAYS) {
+    // sqrt curve: at 0 days -> 0, at 180 days -> ~0.408 (sqrt(180/1095))
+    return Math.sqrt(ageDays / maturityDays);
+  }
+  // linear from MATURITY_EARLY_DAYS to maturityDays
+  const earlyVal = Math.sqrt(MATURITY_EARLY_DAYS / maturityDays);
+  const remaining = (ageDays - MATURITY_EARLY_DAYS) / (maturityDays - MATURITY_EARLY_DAYS);
+  return earlyVal + remaining * (1 - earlyVal);
 }
 
 /** A whole day count from `from` to `to`, clamped at zero; null when either date is absent or bad. */
@@ -179,7 +196,7 @@ export function impliedValue(protocol: SnapshotProtocol, asOf: string, model: Mo
   const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
   const growthMult = 1 + (growthPct / 100) * model.growth_weight;
   const ageForModel = age ?? model.unknown_age_days;
-  const maturityMult = model.maturity_floor + (Math.min(Math.max(ageForModel, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
+  const maturityMult = model.maturity_floor + maturityCurve(Math.min(Math.max(ageForModel, 0), model.maturity_days), model.maturity_days) * model.maturity_range;
   const base = protocol.tvl_usd * model.base_multiple;
   const implied = Math.max(1, Math.round(base * growthMult * maturityMult));
   return { implied, growthPct, growthMult, maturityMult, age };

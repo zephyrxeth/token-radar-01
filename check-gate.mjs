@@ -21,8 +21,9 @@ const watchlist = new Set(snapshot.watchlist);
 const protocolSlugs = new Set(snapshot.protocols.map(p => p.slug));
 
 let errors = [];
+let warnings = [];
 
-// 1. Ranks 1..N unique
+// 1. Ranks 1..N unique and sequential
 const ranks = board.map(r => r.rank).sort((a, b) => a - b);
 for (let i = 0; i < ranks.length; i++) {
   if (ranks[i] !== i + 1) {
@@ -30,37 +31,43 @@ for (let i = 0; i < ranks.length; i++) {
   }
 }
 
-// 2. Non-increasing implied_value
+// 2. Non-increasing implied_value (each row <= previous row)
 for (let i = 1; i < board.length; i++) {
   if (board[i].implied_value_usd > board[i - 1].implied_value_usd) {
     errors.push(`Row ${i + 1} (${board[i].slug}) implied_value ${board[i].implied_value_usd} > row ${i} (${board[i - 1].slug}) ${board[i - 1].implied_value_usd}`);
   }
 }
 
-// 3. All distinct implied_value
+// 3. All implied_value_usd distinct (strictly decreasing since non-increasing + distinct)
 const impliedValues = new Set(board.map(r => r.implied_value_usd));
 if (impliedValues.size !== board.length) {
   errors.push(`Implied values not all distinct: ${impliedValues.size} unique out of ${board.length} rows`);
 }
 
-// 4. All slugs in snapshot protocols
+// 4. All board slugs exist in snapshot protocols
 for (const row of board) {
   if (!protocolSlugs.has(row.slug)) {
     errors.push(`Slug ${row.slug} not found in snapshot protocols`);
   }
 }
 
-// 5. Row count 100-4000
+// 5. Row count in range 100-4000
 if (board.length < 100 || board.length > 4000) {
   errors.push(`Board size ${board.length} not in range 100-4000`);
 }
 
-// 6. Watchlist fully covered
+// 6. Watchlist fully covered (100% coverage required)
 const boardSlugs = new Set(board.map(r => r.slug));
+let missingWatchlist = [];
 for (const slug of watchlist) {
   if (!boardSlugs.has(slug)) {
+    missingWatchlist.push(slug);
     errors.push(`Watchlist slug ${slug} missing from board`);
   }
+}
+const coveragePercent = ((watchlist.size - missingWatchlist.length) / watchlist.size * 100).toFixed(1);
+if (coveragePercent !== '100.0') {
+  errors.push(`Watchlist coverage ${coveragePercent}% (${watchlist.size - missingWatchlist.length}/${watchlist.size}), must be 100%`);
 }
 
 // 7. Farm steps: 3-12 strings, each 20-600 chars, mentions cost and time
@@ -118,15 +125,66 @@ for (const row of board) {
   }
 }
 
+// 11. No duplicate slugs in board
+const slugCounts = new Map();
+for (const row of board) {
+  slugCounts.set(row.slug, (slugCounts.get(row.slug) || 0) + 1);
+}
+for (const [slug, count] of slugCounts) {
+  if (count > 1) {
+    errors.push(`Duplicate slug in board: ${slug} appears ${count} times`);
+  }
+}
+
+// 12. Implied value spread: top value should be meaningfully higher than bottom
+if (board.length >= 2) {
+  const top = board[0].implied_value_usd;
+  const bottom = board[board.length - 1].implied_value_usd;
+  if (top === bottom) {
+    errors.push(`All ${board.length} rows share the same implied value $${top}: a board that ranks nothing by value is not a ranking`);
+  } else if (top / bottom < 1.5) {
+    warnings.push(`Implied value spread is narrow: top $${top} / bottom $${bottom} = ${(top / bottom).toFixed(2)}x`);
+  }
+}
+
+// 13. Farm steps should reference the protocol (sanity check)
+for (const row of board) {
+  const steps = row.farm_steps || [];
+  const hasProtocolRef = steps.some(s => s.toLowerCase().includes(row.name.toLowerCase()) || s.toLowerCase().includes(row.slug.toLowerCase()));
+  if (!hasProtocolRef && steps.length > 0) {
+    warnings.push(`${row.slug}: farm steps may not reference the protocol name or slug`);
+  }
+}
+
+// 14. All watchlist protocols should be ranked in top portion (they're the floor)
+const watchlistRanks = board
+  .filter(r => watchlist.has(r.slug))
+  .map(r => r.rank)
+  .sort((a, b) => a - b);
+if (watchlistRanks.length > 0) {
+  const worstWatchlistRank = watchlistRanks[watchlistRanks.length - 1];
+  if (worstWatchlistRank > board.length * 0.8) {
+    warnings.push(`Watchlist protocols ranked as low as #${worstWatchlistRank} (of ${board.length}); expected in upper portion`);
+  }
+}
+
 if (errors.length > 0) {
   console.error('GATE CHECK FAILED:');
   errors.forEach(e => console.error('  - ' + e));
+  if (warnings.length > 0) {
+    console.error('\nWarnings:');
+    warnings.forEach(w => console.error('  ! ' + w));
+  }
   process.exit(1);
 } else {
   console.log('GATE CHECK PASSED');
   console.log(`  Rows: ${board.length}`);
-  console.log(`  Watchlist covered: ${snapshot.watchlist.length}/${snapshot.watchlist.length}`);
-  console.log(`  Implied value range: $${board[board.length - 1].implied_value_usd} - $${board[0].implied_value_usd}`);
+  console.log(`  Watchlist covered: ${watchlist.size - missingWatchlist.length}/${watchlist.size} (${coveragePercent}%)`);
+  console.log(`  Implied value range: $${board[board.length - 1].implied_value_usd} - $${board[0].implied_value_usd} (${(board[0].implied_value_usd / board[board.length - 1].implied_value_usd).toFixed(2)}x spread)`);
   console.log(`  Farm steps per row: ${board[0].farm_steps.length} (all rows)`);
+  if (warnings.length > 0) {
+    console.log('\nWarnings:');
+    warnings.forEach(w => console.log('  ! ' + w));
+  }
   process.exit(0);
 }

@@ -1,5 +1,16 @@
 // The token radar's model: one snapshot of the protocol universe in, one ranked board out.
 //
+// How the model works:
+// 1. The sealed snapshot carries a watchlist (the floor) and all protocols the index knows.
+// 2. Every watchlist slug is scored, plus up to EARLY_ROWS pre-token protocols below the floor by TVL.
+// 3. Pre-token means no token at all (no mcap, no gecko_id, no symbol). Exchanges and versioned pools are excluded.
+// 4. Implied value = base * growthMult * maturityMult, with constants stated in the dashboard:
+//    base = tvl_usd * BASE_MULTIPLE (0.25)
+//    growthMult = 1 + clamp(change_7d, -60, 120)/100 * GROWTH_WEIGHT (0.5)
+//    maturityMult = maturityFloor + maturityRange * maturityCurve(age_days) (0.6..1.0 over 3 years)
+// 5. Farm plans are 6 steps derived from category, TVL, age, and chains—never from a name list.
+// 6. Live-token protocols are shown separately with the market's own values, never mixed into the board.
+//
 // The board covers every slug in the snapshot's watchlist (the floor, never a ceiling) and may add
 // pre-token protocols below the watchlist floor: the early rows the radar exists to find. A protocol is
 // pre-token when its index entry records no token (no market cap, no CoinGecko id, no symbol); the

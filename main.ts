@@ -1,5 +1,16 @@
 // Token Radar main entry point (Node 22, standard library only).
 //
+// Architecture overview:
+// 1. Input: a sealed snapshot.json (from /input or --input) is parsed and validated against the model's schema.
+// 2. Model: lib/model.ts scores every pre-token protocol—watchlist first, then EARLY_ROWS below the floor by TVL.
+//    Implied value = TVL * base_multiple * growth_multiplier * maturity_multiplier with house constants.
+// 3. Gate: boardIssue() verifies coverage (all watchlist present), rank order (1..n descending by implied value),
+//    no duplicate implied values, and valid farm steps (3..12 steps, 20..600 chars each).
+// 4. Output: board.json, data.js (window.RADAR), and dashboard/ are written to MAKEFUN_OUTPUT_DIR.
+// 5. Dossier: vendor/makefun-board.ts rebuilds a summary JSON from /output for the judge to score.
+// 6. Screenshots: three pre-rendered images (board, detail, filtered) are copied and validated for names/sizes.
+// 7. Zero dependencies: Node standard library only; the vendored make.fun library is checked into vendor/.
+//
 // Reads a sealed snapshot from --input (file or directory containing snapshot.json),
 // scores every pre-token protocol using the model in lib/model.ts, and writes the
 // ranked board plus dashboard assets to MAKEFUN_OUTPUT_DIR (or /output).
